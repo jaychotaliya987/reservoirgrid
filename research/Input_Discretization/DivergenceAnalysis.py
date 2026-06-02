@@ -10,93 +10,109 @@ from reservoirgrid.helpers import viz
 
 ###--------------------Functions--------------------###
 
-
-def plot_attractor_grid(indices, metric_values, metric_name, data_source, filename="output_beautiful.svg", cols=None, save_image=False):
+def plot_attractor_grid(indices, metric_values, metric_name, data_source, 
+                        filename="output_beautiful.svg", cols=None, save_image=False,
+                        system_name=None, dying_pct=None):
     """
-    Plots a highly polished, beautiful 2D projection (X vs Z) of Lorenz attractors 
-    optimized with a transparent slate-grey 'True' backdrop and a striking vivid coral 'Prediction'.
+    Plots a highly polished, beautiful 2D projection (X vs Z) of Lorenz attractors.
+    Optionally renders a small system name + dying percentage heading above the grid.
     """
     n = len(indices)
     if n == 0:
         print("No data provided to plot.")
         return
 
-    # 1. Smart Dynamic Grid Structure
     if cols is None:
         cols = n if n <= 4 else (4 if n <= 16 else 6)
     rows = int(np.ceil(n / cols))
 
-    # Define cell size in inches (width, height)
-    # Set the overall canvas background to a soft, modern neutral off-white
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.2), 
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.2),
                              squeeze=False, facecolor="#F8FAFC")
     axes_flat = axes.flatten()
 
+    # ── Small heading: system name + dying % ──────────────────────────────────
+    if system_name is not None or dying_pct is not None:
+        parts = []
+        if system_name:
+            parts.append(system_name)
+        if dying_pct is not None:
+            parts.append(f"Dying: {dying_pct:.1f}%")
+        heading = "  ·  ".join(parts)
+
+        fig.text(
+            0.01, 0.99,           # top-left corner
+            heading,
+            fontsize=8.5,
+            fontfamily="monospace",
+            color="#64748B",      # muted slate — unobtrusive
+            weight="semibold",
+            va="top", ha="left",
+            transform=fig.transFigure,
+        )
+    # ──────────────────────────────────────────────────────────────────────────
+
     for i, u in enumerate(indices):
         ax = axes_flat[i]
-        
-        # Pull data matrices (0=X, 1=Y, 2=Z)
         true_trajectory = np.array(data_source[u]["true_value"])
         pred_trajectory = np.array(data_source[u]["predictions"])
 
-        # Fetch score and run vitality check
         score = metric_values[i]
         is_dying = str(chaos_utils.trajectory_vitality(true_trajectory, pred_trajectory)["is_dying"])
 
-        # 2. X vs Z PROJECTION (Butterfly Layout)
-        # True Trajectory: Premium muted Slate-Grey backdrop mask (thinner to preserve chaotic structure)
-        ax.plot(true_trajectory[:, 0], true_trajectory[:, 2], 
+        ax.plot(true_trajectory[:, 0], true_trajectory[:, 2],
                 color="#4A5568", linewidth=0.8, alpha=0.25, label="True", zorder=1)
-        
-        # Predicted Trajectory: Vivid, crisp Neon Coral foreground layer
-        ax.plot(pred_trajectory[:, 0], pred_trajectory[:, 2], 
+        ax.plot(pred_trajectory[:, 0], pred_trajectory[:, 2],
                 color="#FF5A36", linewidth=1.1, linestyle=':', alpha=0.95, label="Pred", zorder=2)
 
-        # 3. TYPOGRAPHY: Elegant, high-readability monospace layout alignment
         title_text = f"{metric_name}: {score:.4f}\nDying: {is_dying}"
-        ax.set_title(title_text, fontsize=8.0, pad=10, weight='semibold', 
+        ax.set_title(title_text, fontsize=8.0, pad=10, weight='semibold',
                      fontfamily='monospace', color="#1E293B", loc='left')
 
-        # 4. PREMIUM CARD DESIGN & FRAMING
         ax.set_xticks([])
         ax.set_yticks([])
-        
-        # Sharp, subtle border treatment
         for spine in ax.spines.values():
-            spine.set_color("#E2E8F0")  
+            spine.set_color("#E2E8F0")
             spine.set_linewidth(1.0)
-            
-        # Pure white inside the "cards" creates depth against the #F8FAFC background
-        ax.set_facecolor("#FFFFFF")     
+        ax.set_facecolor("#FFFFFF")
 
-
-    # Automatically adjust padding so nothing clips or strings wrap awkwardly
     plt.tight_layout(pad=3.0)
+    # Leave a little room at the top for the heading
+    if system_name is not None or dying_pct is not None:
+        plt.subplots_adjust(top=0.90)
 
     if save_image:
         if os.path.dirname(filename):
             os.makedirs(os.path.dirname(filename), exist_ok=True)
         print(f"Saving beautiful vector graphic to {filename}...")
-        # facecolor=fig.get_facecolor() ensures the premium off-white canvas transfers to the file
-        plt.savefig(filename, format='svg', bbox_inches='tight', dpi=300, facecolor=fig.get_facecolor())
+        plt.savefig(filename, format='png', bbox_inches='tight', dpi=300,
+                    facecolor=fig.get_facecolor())
         plt.close()
     else:
         plt.show()
 
-def visualize_metric(metric_name, top_n: int):
+
+def visualize_metric(metric_name, top_n: int, top_n_percentage: int, **kwargs):
     best_subset = matrices[metric_name].nsmallest(top_n)
     idx = best_subset.index.values
     values = best_subset.values
-    
-    path = os.path.join(save_path, f"{system_name}_{metric_name}_Best{top_n}.svg")
-    plot_attractor_grid(idx, values, metric_name, data_10, filename=path, save_image=False)
 
+    # Compute dying % for the same top_n to show in the heading
+    dying_pct = compute_dying_percentage(metric_name, top_n=top_n_percentage)
+
+    path = os.path.join(save_path, system_name, f"{metric_name}.png")
+    plot_attractor_grid(
+        idx, values, metric_name, data_10,
+        system_name=system_name,
+        filename=path,
+        dying_pct=dying_pct,
+        **kwargs     
+    )
+    
 def compute_dying_percentage(metric_name, top_n=10):
     """
     Calculates the percentage of trajectories classified as 'is_dying'
     within the best performing subset for a given metric.
     """
-    # Follows your exact theme: extract the top subset and their dataframe indices
     
     best_subset = matrices[metric_name].nsmallest(top_n)
     indices = best_subset.index.values
@@ -130,8 +146,8 @@ def compute_dying_percentage(metric_name, top_n=10):
 ###------------- Computation -------------###
 
 path = "research/Input_Discretization/results/Chaotic/"
-save_path = "Plots/SingleMetric/LHS"
-system_name = "RosslerLHS"
+save_path = "research/Input_Discretization/Plots/"
+system_name = "ThomasLHS"
 system_path = os.path.join(path, system_name)
 
 file = os.path.join(system_path, "80.0.pkl")
@@ -163,18 +179,11 @@ for data in data_10:
 matrices = pd.DataFrame(rows)
 
 
-visualize_metric("JS Divergence", top_n=8)
-visualize_metric("RMSE", top_n=8)
-visualize_metric("KL Divergence", top_n=8)
-visualize_metric("Symmetric KL", top_n=8)
-visualize_metric("PSD Error", top_n=8)
-
-compute_dying_percentage("JS Divergence", top_n=100)
-compute_dying_percentage("RMSE", top_n=100)
-compute_dying_percentage("KL Divergence", top_n=100)
-compute_dying_percentage("Symmetric KL", top_n=100)
-
-
+visualize_metric("JS Divergence", top_n=8, top_n_percentage=100, save_image=True)
+visualize_metric("RMSE", top_n=16, top_n_percentage=100, save_image=True)
+visualize_metric("KL Divergence", top_n=8, top_n_percentage=100, save_image=True)
+visualize_metric("Symmetric KL", top_n=8, top_n_percentage=100, save_image=True)
+visualize_metric("PSD Error", top_n=8, top_n_percentage=100, save_image=True)
 
 
 
