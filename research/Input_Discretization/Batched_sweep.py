@@ -4,14 +4,17 @@ import tracemalloc
 
 import os
 import torch
+torch._dynamo.config.dynamic_shapes = True
+os.environ["TORCHINDUCTOR_CACHE_DIR"] = r"C:\Users\jaych\ReservoirGrid\inductor_cache"
+
 import numpy as np
 import pickle
 
 from reservoirgrid.helpers import utils
 from scipy.stats import qmc
 
-TARGET_PP = [95,100] # Rossler 95,100 left
-system_list = ["Rossler"]
+TARGET_PP = [100] 
+system_list = ["MultiChua"]
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Hyperparameter Sweep Setup
