@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+from networkx import sigma
 import numpy as np
 import pandas as pd
 import json
@@ -176,6 +177,8 @@ def plot_and_save_heatmap(
     metric: str,
     folder_name: str,
     output_base_dir: Path,
+    apply_blur: bool = False,
+    sigma: tuple = (1.5, 0.5)
 ) -> None:
     """
     Transforms long-form metrics data into a 2D matrix structure and saves a
@@ -206,6 +209,10 @@ def plot_and_save_heatmap(
     # Fill NaN cells with column medians to prevent white strips in imshow.
     # Missing cells arise when not every ppp value has data for every param_combo.
     heatmap_matrix = pivot_df.apply(lambda col: col.fillna(col.median())).to_numpy()
+
+    if apply_blur:
+        from scipy.ndimage import gaussian_filter
+        heatmap_matrix = gaussian_filter(heatmap_matrix, sigma=sigma)
 
     ppp_values  = pivot_df.index.to_numpy()
     num_combos  = heatmap_matrix.shape[1]
@@ -242,7 +249,7 @@ def plot_and_save_heatmap(
         cmap=metric_cfg["cmap"],  # Dynamic assignment
         aspect="auto",
         origin="lower",
-        interpolation="nearest",
+        interpolation="bilinear" if apply_blur else "nearest",
         norm=norm,
     )
 
@@ -291,6 +298,8 @@ def process_single_location(
     file_workers: int = 4,
     entry_workers: int = 24,
     force_recompute: bool = False,  # set True to ignore cache and rerun
+    apply_blur: bool = False,
+    sigma: tuple = (1.5, 0.5)
 ) -> None:
     input_path  = Path(target_pkl_dir)
     output_path = Path(output_base_dir)
@@ -316,8 +325,8 @@ def process_single_location(
     # --------------------------------------------------------------------------
     for metric in target_metrics:
         logger.info(f"Plotting: {metric}")
-        plot_and_save_heatmap(df, metric, folder_name, output_path)
-        plot_interactive_heatmap(df, metric, folder_name, output_path)
+        plot_and_save_heatmap(df, metric, folder_name, output_path, apply_blur=apply_blur, sigma=sigma)
+        plot_interactive_heatmap(df, metric, folder_name, output_path, apply_blur=apply_blur, sigma=sigma)
 
     del df
     gc.collect()
@@ -400,6 +409,8 @@ def plot_interactive_heatmap(
     metric: str,
     folder_name: str,
     output_base_dir: Path,
+    apply_blur: bool = False,
+    sigma: tuple = (1.5, 0.5)
 ) -> None:
     """
     Generates a browser-interactive HTML heatmap where hovering over any cell
@@ -425,6 +436,10 @@ def plot_interactive_heatmap(
 
     # Fill NaN with column median (same as static heatmap)
     heatmap_matrix = pivot_df.apply(lambda col: col.fillna(col.median())).to_numpy()
+
+    if apply_blur:
+        from scipy.ndimage import gaussian_filter
+        heatmap_matrix = gaussian_filter(heatmap_matrix, sigma=sigma)
 
     # --- Build per-cell hover text -------------------------------------------
     # Each cell shows: metric value, ppp, and every unpacked parameter
@@ -464,6 +479,7 @@ def plot_interactive_heatmap(
         colorscale=colorscale,
         hoverinfo="text",
         text=hover_text,
+        zsmooth="best" if apply_blur else False,
         colorbar=dict(
             title=dict(text=colorbar_title, side="right"),
             tickfont=dict(size=10),
@@ -514,5 +530,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         process_single_location(sys.argv[1])
     else:
-        process_single_location("research/Input_Discretization/results/Chaotic/HalvorsenLHS", force_recompute=True)
+        process_single_location("research/Input_Discretization/results/Chaotic/Lorenz", force_recompute=False, apply_blur=False
+                                , sigma=(1.5, 0.5))
         
