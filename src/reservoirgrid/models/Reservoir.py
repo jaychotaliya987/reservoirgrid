@@ -172,7 +172,6 @@ class Reservoir(nn.Module):
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
-
     def forward(self, u: torch.Tensor, reset_state: bool = True) -> torch.Tensor:
         """
         Executes a sequential step-by-step forward pass through the hidden reservoir.
@@ -219,6 +218,7 @@ class Reservoir(nn.Module):
             self.reservoir_states[t] = self.reservoir_states_buf
 
         return self._readout(self.reservoir_states)
+    
 
     # ------------------------------------------------------------------
     # Train readout
@@ -527,7 +527,6 @@ class Reservoir(nn.Module):
         Returns:
             dict: Key-value attributes mapping the discovered optimal parameter configuration.
         """
-        
         sampler = sampler or optuna.samplers.CmaEsSampler()
 
         X_train = X_train.to(self.device, self.dtype)
@@ -540,28 +539,28 @@ class Reservoir(nn.Module):
 
         print(f"[{type(self).__name__}] Starting in-class optimization using '{metric_fn.__name__}' ({direction} mode)...")
 
-        # --- Initialize Progress Bar Setup ---
         try:
             from tqdm import tqdm
             pbar = tqdm(total=n_trials, desc="Optimizing Reservoir", unit="trial")
             use_tqdm = True
         except ImportError:
             use_tqdm = False
-            print("Note: Install 'tqdm' via pip to get a visual progress bar indicator.")
+
+        # --- Track the absolute best matrices explicitly ---
+        best_score_overall = float("inf") if direction == "minimize" else float("-inf")
+        best_matrices = {}
 
         for b_idx in range(num_batches):
             trials = [study.ask() for _ in range(min(batch_size, n_trials - len(study.trials)))]
             if not trials:
                 break
 
-            # 1. Collect hyperparameter sweeps from Optuna
             sr_list, lr_list, is_list = [], [], []
             for trial in trials:
                 sr_list.append(trial.suggest_float("spectral_radius", 0.1, 1.5, step=0.01))
                 lr_list.append(trial.suggest_float("leak_rate", 0.05, 1.0, step=0.05))
                 is_list.append(trial.suggest_float("input_scaling", 0.1, 1.0, step=0.01))
 
-            # 2. Instantiate a temporary batched Reservoir using this instance as a blueprint
             search_batch = Reservoir(
                 input_dim=self.input_dim,
                 reservoir_dim=self.reservoir_dim,
@@ -576,15 +575,12 @@ class Reservoir(nn.Module):
                 dtype=self.dtype
             )
 
-            # 3. Fit readout systems simultaneously across the batch
             search_batch.train_readout(inputs=X_train, targets=Y_train, warmup=warmup, alpha=alpha)
 
-            # 4. Evaluate predictions on validation sequence [Shape: (T, B, O)]
             search_batch.eval()
             with torch.no_grad():
                 val_predictions = search_batch(X_val, reset_state=True)
 
-            # 5. Score slices using your injected custom metric function
             for i, trial in enumerate(trials):
                 pred_slice = val_predictions[:, i, :]
                 try:
@@ -594,12 +590,19 @@ class Reservoir(nn.Module):
 
                 study.tell(trial, score)
 
-            # --- Update Progress Outputs ---
+                # --- Capture the exact matrix slices if this is a new best ---
+                is_best = (score < best_score_overall) if direction == "minimize" else (score > best_score_overall)
+                if is_best:
+                    best_score_overall = score
+                    best_matrices["W_in"] = search_batch.W_in[i].clone()
+                    best_matrices["W"] = search_batch.W[i].clone()
+                    best_matrices["W_out"] = search_batch.W_out[i].clone()
+                    best_matrices["b_out"] = search_batch.b_out[i].clone()
+
             if use_tqdm:
                 try:
                     pbar.set_postfix({"best_score": f"{study.best_value:.5f}"})
                 except ValueError:
-                    # Traps case where no trial completed successfully yet
                     pbar.set_postfix({"best_score": "NaN"})
                 pbar.update(len(trials))
             else:
@@ -612,33 +615,18 @@ class Reservoir(nn.Module):
         print(f"Optimization complete! Best Parameters: {study.best_params}")
 
         # --- UPDATE THE CURRENT INSTANCE STATE ---
-        print(f"Re-initializing current instance weights with the optimal configuration...")
+        print(f"Injecting exact winning matrices into the model...")
         
-        # Unify batch to a single best config mapping to B=1
         self.B = 1
         
         self.register_buffer("spectral_radii", torch.tensor([study.best_params["spectral_radius"]], device=self.device, dtype=self.dtype))
         self.register_buffer("leak_rates", torch.tensor([study.best_params["leak_rate"]], device=self.device, dtype=self.dtype))
         self.register_buffer("input_scalings", torch.tensor([study.best_params["input_scaling"]], device=self.device, dtype=self.dtype))
 
-        W_in_opt = (torch.rand(self.B, self.reservoir_dim, self.input_dim, device=self.device, dtype=self.dtype) * 2 - 1)
-        W_in_opt = W_in_opt * self.input_scalings[:, None, None]
-
-        W_opt = torch.rand(self.B, self.reservoir_dim, self.reservoir_dim, device=self.device, dtype=self.dtype) * 2 - 1
-        mask = (torch.rand_like(W_opt) > self.sparsity).to(self.dtype)
-        W_opt = W_opt * mask
-
-        eigs = torch.linalg.eigvals(W_opt)
-        current_sr = torch.max(eigs.abs(), dim=-1).values.clamp(min=1e-9)
-        W_opt = W_opt * (self.spectral_radii / current_sr)[:, None, None]
-
-        self.W_in = nn.Parameter(W_in_opt, requires_grad=False)
-        self.W = nn.Parameter(W_opt, requires_grad=False)
-
-        # Reset unified readout buffers for B=1
-        self.register_buffer("W_out", torch.zeros(self.B, self.output_dim, self.reservoir_dim, device=self.device, dtype=self.dtype))
-        self.register_buffer("b_out", torch.zeros(self.B, self.output_dim, device=self.device, dtype=self.dtype))
-        
-        self.train_readout(inputs=X_train, targets=Y_train, warmup=warmup, alpha=alpha)
+        # 1. Inject the perfectly randomized and scaled tensors from the winning trial
+        self.W_in = nn.Parameter(best_matrices["W_in"].unsqueeze(0), requires_grad=False)
+        self.W = nn.Parameter(best_matrices["W"].unsqueeze(0), requires_grad=False)       
+        self.W_out = best_matrices["W_out"].unsqueeze(0)
+        self.b_out = best_matrices["b_out"].unsqueeze(0)
         
         return study.best_params
